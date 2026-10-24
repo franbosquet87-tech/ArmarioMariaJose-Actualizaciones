@@ -1,0 +1,68 @@
+name: Publicar interfaz segura 1.4.4
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/prepare_v144.py"
+      - ".github/workflows/publicar-144.yml"
+permissions:
+  contents: write
+jobs:
+  publicar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Descargar canal público
+        uses: actions/checkout@v4
+      - name: Preparar interfaz sin ropa de ejemplo
+        run: python3 scripts/prepare_v144.py
+      - name: Verificar sintaxis y privacidad
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import re, tempfile, pathlib, subprocess, hashlib
+          path=pathlib.Path("updates/app-ui.html")
+          data=path.read_bytes()
+          html=data.decode("utf-8")
+          assert html.startswith("<!DOCTYPE html>") and html.rstrip().endswith("</html>")
+          assert len(data)<2*1024*1024
+          assert 'file:///android_asset/maria-jose-portrait.webp' in html
+          assert 'class="mother-hero-photo" src="data:image/webp;base64,' not in html
+          assert "function quitarMuestras(o)" in html
+          assert "/* Portada adaptable 1.4.4 */" in html
+          assert "items:[],wardrobes:[...WARDROBE_SEED]" in html
+          scripts=re.findall(r'<script(?:\s[^>]*)?>(.*?)</script>',html,re.S|re.I)
+          assert scripts
+          for i,script in enumerate(scripts):
+              with tempfile.TemporaryDirectory() as temp:
+                  js=pathlib.Path(temp)/f"check-{i}.js"
+                  js.write_text(script,encoding="utf-8")
+                  subprocess.run(["node","--check",str(js)],check=True)
+          print("VALIDADO: sin imagen privada de madre, nueva versión sin ejemplos y sintaxis correcta")
+          print("SHA-256:",hashlib.sha256(data).hexdigest())
+          PY
+      - name: Crear manifiesto SHA-256 compatible con la APK
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib, json, time
+          html=Path("updates/app-ui.html").read_bytes()
+          path=Path("updates/latest.json")
+          old=json.loads(path.read_text(encoding="utf-8"))
+          revision=max(int(time.time()),int(old.get("revision",0))+1)
+          mf={
+            "revision":revision,
+            "version":"1.4.4",
+            "sha256":hashlib.sha256(html).hexdigest(),
+            "notes":"Portada mejor proporcionada y retirada segura de prendas, looks y prestamos de ejemplo."
+          }
+          path.write_text(json.dumps(mf,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
+          print("Publicada:",mf["version"],"revision:",mf["revision"])
+          PY
+      - name: Publicar para actualizar desde la app
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add updates/app-ui.html updates/latest.json
+          git diff --cached --quiet || { git commit -m "Publicar actualizacion de armario 1.4.4"; git push origin HEAD:main; }
